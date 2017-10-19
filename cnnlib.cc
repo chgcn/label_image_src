@@ -58,16 +58,18 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/util/command_line_flags.h"
+#include <opencv2/opencv.hpp>
 using tensorflow::Flag;
 using tensorflow::Tensor;
 using tensorflow::Status;
 using tensorflow::string;
 using tensorflow::int32;
 using namespace tensorflow;
+using namespace cv;
 
 // These are all common classes it's handy to reference with no namespace.
 
-// Takes a file name, and loads a list of labels from it, one per line, and
+// Takes a file name, tand loads a list of labels from it, one per line, and
 // returns a vector of the strings. It pads with empty strings so the length
 // of the result is a multiple of 16, because our model expects that.
 Status ReadLabelsFile(const string& file_name, std::vector<string>* result,
@@ -112,6 +114,33 @@ static Status ReadEntireFile(tensorflow::Env* env, const string& filename,
   return Status::OK();
 }
 
+static Status ReadEntireMat(tensorflow::Env* env, Mat img,
+                             Tensor* output) {
+  img.convertTo(img, CV_32FC3);
+  std::vector<uchar> data_encode;  
+  imencode(".jpg", img, data_encode);
+  string contents(data_encode.begin(), data_encode.end());
+  /*tensorflow::uint64 file_size = 0;
+  TF_RETURN_IF_ERROR(env->GetFileSize(filename, &file_size));
+
+  string contents;
+  contents.resize(file_size);
+
+  std::unique_ptr<tensorflow::RandomAccessFile> file;
+  TF_RETURN_IF_ERROR(env->NewRandomAccessFile(filename, &file));*/
+
+  tensorflow::StringPiece data(contents);
+  /*TF_RETURN_IF_ERROR(file->Read(0, file_size, &data, &(contents)[0]));
+  if (data.size() != file_size) {
+    return tensorflow::errors::DataLoss("Truncated read of '", filename,
+                                
+      "' expected ", file_size, " got ",
+                                        data.size());
+  }*/
+  output->scalar<string>()() = data.ToString();
+  return Status::OK();
+}
+
 // Given an image file name, read in the data, try to decode it as an image,
 // resize it to the requested size, and then scale the values as desired.
 Status ReadTensorFromImageFile(const string& file_name, const int input_height,
@@ -128,7 +157,7 @@ Status ReadTensorFromImageFile(const string& file_name, const int input_height,
   Tensor input(tensorflow::DT_STRING, tensorflow::TensorShape());
   TF_RETURN_IF_ERROR(
       ReadEntireFile(tensorflow::Env::Default(), file_name, &input));
-
+ 
   // use a placeholder to read input data
   auto file_reader =
       Placeholder(root.WithOpName("input/input_x"), tensorflow::DataType::DT_STRING);
@@ -182,6 +211,65 @@ Status ReadTensorFromImageFile(const string& file_name, const int input_height,
   TF_RETURN_IF_ERROR(session->Run({inputs}, {output_name}, {}, out_tensors));
   return Status::OK();
 }
+
+Status ReadTensorFromImageFile(Mat img, const int input_height,
+                               const int input_width, const float input_mean,
+                               const float input_std,
+                               std::vector<Tensor>* out_tensors) {
+  auto root = tensorflow::Scope::NewRootScope();
+  using namespace ::tensorflow::ops;  // NOLINT(build/namespaces)
+
+  string input_name = "file_reader";
+  string output_name = "normalized";
+  
+  
+  // read file_name into a tensor named input
+  Tensor input(tensorflow::DT_STRING, tensorflow::TensorShape());
+  TF_RETURN_IF_ERROR(ReadEntireMat(tensorflow::Env::Default(), img, &input));
+
+  // use a placeholder to read input data
+  auto file_reader =
+      Placeholder(root.WithOpName("input/input_x"), tensorflow::DataType::DT_STRING);
+  
+  std::vector<std::pair<string, tensorflow::Tensor>> inputs = {
+      {"input/input_x", input}
+  };
+
+  // Now try to figure out what kind of file it is and decode it.
+  const int wanted_channels = 1;
+  tensorflow::Output image_reader;
+
+  image_reader = DecodeJpeg(root.WithOpName("jpeg_reader"), file_reader,
+                              DecodeJpeg::Channels(wanted_channels));
+
+  // Now cast the image data to float so we can do normal math on it.
+  auto float_caster =
+      Cast(root.WithOpName("float_caster"), image_reader, tensorflow::DT_FLOAT);
+  // The convention for image ops in TensorFlow is that all images are expected
+  // to be in batches, so that they're four-dimensional arrays with indices of
+  // [batch, height, width, channel]. Because we only have a single image, we
+  // have to add a batch dimension of 1 to the start with ExpandDims().
+  auto dims_expander = ExpandDims(root, float_caster, 0);
+  // Bilinearly resize the image to fit the required dimensions.
+  auto resized = ResizeBilinear(
+      root, dims_expander,
+      Const(root.WithOpName("size"), {input_height, input_width}));
+  // Subtract the mean and divide by the scale.
+  Div(root.WithOpName(output_name), Sub(root, resized, {input_mean}),
+      {input_std});
+
+  // This runs the GraphDef network definition that we've just constructed, and
+  // returns the results in the output tensor.
+  tensorflow::GraphDef graph;
+  TF_RETURN_IF_ERROR(root.ToGraphDef(&graph));
+
+  std::unique_ptr<tensorflow::Session> session(
+      tensorflow::NewSession(tensorflow::SessionOptions()));
+  TF_RETURN_IF_ERROR(session->Create(graph));
+  TF_RETURN_IF_ERROR(session->Run({inputs}, {output_name}, {}, out_tensors));
+  return Status::OK();
+}
+
 
 // Reads a model graph definition from disk, and creates a session object you
 // can use to run it.
@@ -279,7 +367,7 @@ Status CheckTopLabel(const std::vector<Tensor>& outputs, int expected,
 }
 
 
-int cnnmain(int argc, char* argv[], string graph, string image, string labels, string* result) {
+int cnnmain(int argc, char* argv[], Mat img, string graph, string image, string labels, string* result) {
   // These are the command-line flags the program can understand.
   // They define where the graph and input data is located, and what kind of
   // input the model expects. If you train your own model, or use something
@@ -291,11 +379,10 @@ int cnnmain(int argc, char* argv[], string graph, string image, string labels, s
   float input_std = 0.1;
   string input_layer = "input/input_x";
   string output_layer = "output";
-
   auto root = tensorflow::Scope::NewRootScope();
-  
   bool self_test = false;
   string root_dir = "";
+
   std::vector<Flag> flag_list = {
       Flag("image", &image, "image to be processed"),
       Flag("graph", &graph, "graph to be executed"),
@@ -313,6 +400,9 @@ int cnnmain(int argc, char* argv[], string graph, string image, string labels, s
   };
   string usage = tensorflow::Flags::Usage(argv[0], flag_list);
   const bool parse_result = tensorflow::Flags::Parse(&argc, argv, flag_list);
+
+ 
+
   if (!parse_result) {
     LOG(ERROR) << usage;
     return -1;
@@ -339,22 +429,12 @@ int cnnmain(int argc, char* argv[], string graph, string image, string labels, s
   std::vector<Tensor> resized_tensors;
   string image_path = tensorflow::io::JoinPath(root_dir, image);
   Status read_tensor_status =
-      ReadTensorFromImageFile(image_path, input_height, input_width, input_mean,
-                              input_std, &resized_tensors);
+      //ReadTensorFromImageFile(image_path, input_height, input_width, input_mean, input_std, &resized_tensors);
+  	ReadTensorFromImageFile(img, input_height, input_width, input_mean, input_std, &resized_tensors);
   if (!read_tensor_status.ok()) {
     LOG(ERROR) << read_tensor_status;
     return -1;
   }
-  auto kp_reader =
-      tensorflow::ops::Placeholder(root.WithOpName("keep_prob"), tensorflow::DataType::DT_FLOAT);
-  
-    auto lr_reader =
-      tensorflow::ops::Placeholder(root.WithOpName("learning_rate"), tensorflow::DataType::DT_FLOAT);
-  
-  
- auto is_test_reader =
-      tensorflow::ops::Placeholder(root.WithOpName("is_training"), tensorflow::DataType::DT_BOOL);
-  
 
   const Tensor& resized_tensor = resized_tensors[0];
   Tensor kp(DT_FLOAT, TensorShape({1}));
@@ -370,22 +450,6 @@ int cnnmain(int argc, char* argv[], string graph, string image, string labels, s
     return -1;
   }
 
-  // This is for automated testing to make sure we get the expected result with
-  // the default settings. We know that label 653 (military uniform) should be
-  // the top label for the Admiral Hopper image.
-  /*if (self_test) {
-    bool expected_matches;
-    Status check_status = CheckTopLabel(outputs, 653, &expected_matches);
-    if (!check_status.ok()) {
-      LOG(ERROR) << "Running check failed: " << check_status;
-      return -1;
-    }
-    if (!expected_matches) {
-      LOG(ERROR) << "Self-test failed!";
-      return -1;
-    }
-  }
-  */
   // Do something interesting with the results we've generated.
   Status print_status = PrintTopLabels(outputs, labels, result);
   if (!print_status.ok()) {
