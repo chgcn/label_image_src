@@ -34,9 +34,6 @@ limitations under the License.
 // Note that, for GIF inputs, to reuse existing code, only single-frame ones
 // are supported.
 
-
-
-
 #include <fstream>
 #include <utility>
 #include <vector>
@@ -72,16 +69,16 @@ using namespace cv;
 // Takes a file name, tand loads a list of labels from it, one per line, and
 // returns a vector of the strings. It pads with empty strings so the length
 // of the result is a multiple of 16, because our model expects that.
-Status ReadLabelsFile(const string& file_name, std::vector<string>* result,
+Status ReadLabels(string labelstr, std::vector<string>* result,
                       size_t* found_label_count) {
-  std::ifstream file(file_name);
-  if (!file) {
-    return tensorflow::errors::NotFound("Labels file ", file_name,
+  std::istringstream is(labelstr);
+  if (!is) {
+    return tensorflow::errors::NotFound("Labels file ", labelstr,
                                         " not found.");
   }
   result->clear();
   string line;
-  while (std::getline(file, line)) {
+  while (is >> line) {
     result->push_back(line);
   }
   *found_label_count = result->size();
@@ -320,11 +317,11 @@ Status GetTopLabels(const std::vector<Tensor>& outputs, int how_many_labels,
 // Given the output of a model run, and the name of a file containing the labels
 // this prints out the top five highest-scoring values.
 Status PrintTopLabels(const std::vector<Tensor>& outputs,
-                      const string& labels_file_name, string* toplabel) {
+                      string labelstr, string* toplabel) {
   std::vector<string> labels;
   size_t label_count;
   Status read_labels_status =
-      ReadLabelsFile(labels_file_name, &labels, &label_count);
+      ReadLabels(labelstr, &labels, &label_count);
   if (!read_labels_status.ok()) {
     LOG(ERROR) << read_labels_status;
     return read_labels_status;
@@ -340,7 +337,7 @@ Status PrintTopLabels(const std::vector<Tensor>& outputs,
     const int label_index = indices_flat(pos);
     const float score = scores_flat(pos);
     LOG(INFO) << labels[label_index] << " (" << label_index << "): " << score;
-    *toplabel = labels[label_index];
+    (*toplabel).append(labels[label_index]);
   }
 
   return Status::OK();
@@ -367,12 +364,15 @@ Status CheckTopLabel(const std::vector<Tensor>& outputs, int expected,
 }
 
 
-int cnnmain(int argc, char* argv[], Mat img, string graph, string image, string labels, string* result) {
+int cnnmain(int argc, char* argv[], std::vector<Mat> imgs, string graph, string* result) {
   // These are the command-line flags the program can understand.
   // They define where the graph and input data is located, and what kind of
   // input the model expects. If you train your own model, or use something
   // other than inception_v3, then you'll need to update these.
- auto start = std::chrono::system_clock::now();  
+  auto start = std::chrono::system_clock::now();  
+  
+  string image;
+  string labels;
   int32 input_width = 20;
   int32 input_height = 20;
   float input_mean = 0;
@@ -382,6 +382,7 @@ int cnnmain(int argc, char* argv[], Mat img, string graph, string image, string 
   auto root = tensorflow::Scope::NewRootScope();
   bool self_test = false;
   string root_dir = "";
+  string labelstr("0 1 2 3 4 5 6 7 8 9 A B C D E F G H J K L M N P Q R S T U V W X Y Z 川 鄂 赣 甘 贵 桂 黑 沪 冀 吉 津 晋 京 辽 鲁 蒙 闽 宁 青 琼 陕 苏 皖 湘 新 豫 渝 粤 云 藏 浙");
 
   std::vector<Flag> flag_list = {
       Flag("image", &image, "image to be processed"),
@@ -400,8 +401,6 @@ int cnnmain(int argc, char* argv[], Mat img, string graph, string image, string 
   };
   string usage = tensorflow::Flags::Usage(argv[0], flag_list);
   const bool parse_result = tensorflow::Flags::Parse(&argc, argv, flag_list);
-
- 
 
   if (!parse_result) {
     LOG(ERROR) << usage;
@@ -426,40 +425,42 @@ int cnnmain(int argc, char* argv[], Mat img, string graph, string image, string 
 
   // Get the image from disk as a float array of numbers, resized and normalized
   // to the specifications the main graph expects.
-  std::vector<Tensor> resized_tensors;
-  string image_path = tensorflow::io::JoinPath(root_dir, image);
-  Status read_tensor_status =
-      //ReadTensorFromImageFile(image_path, input_height, input_width, input_mean, input_std, &resized_tensors);
-  	ReadTensorFromImageFile(img, input_height, input_width, input_mean, input_std, &resized_tensors);
-  if (!read_tensor_status.ok()) {
-    LOG(ERROR) << read_tensor_status;
-    return -1;
-  }
+  for (auto i : imgs)
+  {
+    std::vector<Tensor> resized_tensors;
+    string image_path = tensorflow::io::JoinPath(root_dir, image);
+    Status read_tensor_status =
+        //ReadTensorFromImageFile(image_path, input_height, input_width, input_mean, input_std, &resized_tensors);
+    	ReadTensorFromImageFile(i, input_height, input_width, input_mean, input_std, &resized_tensors);
+    if (!read_tensor_status.ok()) {
+      LOG(ERROR) << read_tensor_status;
+      return -1;
+    }
 
-  const Tensor& resized_tensor = resized_tensors[0];
-  Tensor kp(DT_FLOAT, TensorShape({1}));
-  
-  kp.scalar<float>()() = 1;
-  
-  // Actually run the image through the model.
-  std::vector<Tensor> outputs;
-  
-  Status run_status = session->Run({{input_layer, resized_tensor},{"keep_prob", kp}},{output_layer}, {}, &outputs);
-  if (!run_status.ok()) {
-    LOG(ERROR) << "Running model failed: " << run_status;
-    return -1;
-  }
+    const Tensor& resized_tensor = resized_tensors[0];
+    Tensor kp(DT_FLOAT, TensorShape({1}));
+    
+    kp.scalar<float>()() = 1;
+    
+    // Actually run the image through the model.
+    std::vector<Tensor> outputs;
+    
+    Status run_status = session->Run({{input_layer, resized_tensor},{"keep_prob", kp}},{output_layer}, {}, &outputs);
+    if (!run_status.ok()) {
+      LOG(ERROR) << "Running model failed: " << run_status;
+      return -1;
+    }
 
-  // Do something interesting with the results we've generated.
-  Status print_status = PrintTopLabels(outputs, labels, result);
-  if (!print_status.ok()) {
-    LOG(ERROR) << "Running print failed: " << print_status;
-    return -1;
+    // Do something interesting with the results we've generated.
+    Status print_status = PrintTopLabels(outputs, labelstr, result);
+    if (!print_status.ok()) {
+      LOG(ERROR) << "Running print failed: " << print_status;
+      return -1;
+    }
   }
-
   auto end = std::chrono::system_clock::now();
   auto elapsed =
-    std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+  std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
   std::cout << "runtime: " << elapsed.count() << std::endl;	
   return 0;
 }
