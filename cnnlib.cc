@@ -37,6 +37,7 @@ limitations under the License.
 #include <fstream>
 #include <utility>
 #include <vector>
+#include <map>
 #include "tensorflow/cc/ops/const_op.h"
 #include "tensorflow/cc/ops/image_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
@@ -336,7 +337,7 @@ Status PrintTopLabels(const std::vector<Tensor>& outputs,
   for (int pos = 0; pos < how_many_labels; ++pos) {
     const int label_index = indices_flat(pos);
     const float score = scores_flat(pos);
-    LOG(INFO) << labels[label_index] << " (" << label_index << "): " << score;
+    //LOG(INFO) << labels[label_index] << " (" << label_index << "): " << score;
     (*toplabel).append(labels[label_index]);
   }
 
@@ -363,13 +364,12 @@ Status CheckTopLabel(const std::vector<Tensor>& outputs, int expected,
   return Status::OK();
 }
 
-
-int cnnmain(int argc, char* argv[], std::vector<Mat> imgs, string graph, string* result) {
+int cnnmain(int argc, char* argv[], string graph, std::vector<Mat> imgs, string* result) {
   // These are the command-line flags the program can understand.
   // They define where the graph and input data is located, and what kind of
   // input the model expects. If you train your own model, or use something
   // other than inception_v3, then you'll need to update these.
-  auto start = std::chrono::system_clock::now();  
+  //auto start = std::chrono::system_clock::now();  
   
   string image;
   string labels;
@@ -381,8 +381,8 @@ int cnnmain(int argc, char* argv[], std::vector<Mat> imgs, string graph, string*
   string output_layer = "output";
   auto root = tensorflow::Scope::NewRootScope();
   bool self_test = false;
-  string root_dir = "";
   string labelstr("0 1 2 3 4 5 6 7 8 9 A B C D E F G H J K L M N P Q R S T U V W X Y Z 川 鄂 赣 甘 贵 桂 黑 沪 冀 吉 津 晋 京 辽 鲁 蒙 闽 宁 青 琼 陕 苏 皖 湘 新 豫 渝 粤 云 藏 浙");
+  string root_dir = "";
 
   std::vector<Flag> flag_list = {
       Flag("image", &image, "image to be processed"),
@@ -458,9 +458,9 @@ int cnnmain(int argc, char* argv[], std::vector<Mat> imgs, string graph, string*
       return -1;
     }
   }
-  auto end = std::chrono::system_clock::now();
-  auto elapsed =
-  std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-  std::cout << "runtime: " << elapsed.count() << std::endl;	
+  //auto end = std::chrono::system_clock::now();
+  //auto elapsed =
+  //std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+  //std::cout << "runtime: " << elapsed.count() << std::endl;	
   return 0;
 }
