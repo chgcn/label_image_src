@@ -364,7 +364,26 @@ Status CheckTopLabel(const std::vector<Tensor>& outputs, int expected,
   return Status::OK();
 }
 
-int cnnmain(int argc, char* argv[], string graph, std::vector<Mat> imgs, string* result) {
+std::unique_ptr<tensorflow::Session> session;
+
+int Initialize(string graph)
+{
+  string root_dir = "";
+  string graph_path = tensorflow::io::JoinPath(root_dir, graph);
+  Status load_graph_status = LoadGraph(graph_path, &session);
+  if (!load_graph_status.ok()) {
+    LOG(ERROR) << load_graph_status;
+    return -1;
+  }
+  return 0;
+}
+int UnInitialize()
+{
+  session->Close();
+  return 0;
+}
+
+int cnnmain(int argc, char* argv[], std::vector<Mat> imgs, string* result) {
   // These are the command-line flags the program can understand.
   // They define where the graph and input data is located, and what kind of
   // input the model expects. If you train your own model, or use something
@@ -386,7 +405,7 @@ int cnnmain(int argc, char* argv[], string graph, std::vector<Mat> imgs, string*
 
   std::vector<Flag> flag_list = {
       Flag("image", &image, "image to be processed"),
-      Flag("graph", &graph, "graph to be executed"),
+      //Flag("graph", &graph, "graph to be executed"),
       Flag("labels", &labels, "name of file containing labels"),
       Flag("input_width", &input_width, "resize image to this width in pixels"),
       Flag("input_height", &input_height,
@@ -415,13 +434,13 @@ int cnnmain(int argc, char* argv[], string graph, std::vector<Mat> imgs, string*
   }
 
   // First we load and initialize the model.
-  std::unique_ptr<tensorflow::Session> session;
+  /*std::unique_ptr<tensorflow::Session> session;
   string graph_path = tensorflow::io::JoinPath(root_dir, graph);
   Status load_graph_status = LoadGraph(graph_path, &session);
   if (!load_graph_status.ok()) {
     LOG(ERROR) << load_graph_status;
     return -1;
-  }
+  }*/
 
   // Get the image from disk as a float array of numbers, resized and normalized
   // to the specifications the main graph expects.
